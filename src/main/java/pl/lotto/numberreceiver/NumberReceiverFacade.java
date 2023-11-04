@@ -1,57 +1,85 @@
 package pl.lotto.numberreceiver;
 
-import lombok.AllArgsConstructor;
-import pl.lotto.numberreceiver.dto.InputNumberResultDto;
-import pl.lotto.numberreceiver.dto.TicketDto;
-
-import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.UUID;
+import java.util.stream.Collectors;
+import lombok.AllArgsConstructor;
+import pl.lotto.numberreceiver.dto.NumberReceiverResponseDto;
+import pl.lotto.numberreceiver.dto.TicketDto;
 
-/*
-* Klient podaje 6liczb
-* liczby muszą być w zakresie od 1-99
-* liczby nie mogą się powtarzać
-* klient dostaje informacje o dacie losowania
-* klient dostaje informacje o swoim unikalnym identyfikatorze losowania
-* 
-* */
-
+import static pl.lotto.numberreceiver.ValidationResult.INPUT_SUCCESS;
 
 @AllArgsConstructor
 public class NumberReceiverFacade {
 
-    private final NumberValidator validator;
-    private NumberReceiverRepository repository;
-    private final Clock clock;
+    private final NumberValidator numberValidator;
+    private final DrawDateGenerator drawDateGenerator;
+    private final HashGenerable hashGenerator;
+    private final TicketRepository ticketRepository;
 
-    public InputNumberResultDto inputNumbers(Set<Integer> numberFromUser){
-        boolean areAllNumbersRange = validator.areAllNumbersRange(numberFromUser);
-        if (areAllNumbersRange) {
-            String ticketId = UUID.randomUUID().toString();
-            LocalDateTime drawData = LocalDateTime.now(clock);
-            Ticket savedTicket = repository.save(new Ticket(ticketId, drawData, numberFromUser));
-            return InputNumberResultDto.builder()
-                    .drawData(savedTicket.drawData())
-                    .ticketId(savedTicket.ticketId())
-                    .numbersFromUser(numberFromUser)
-                    .message("success")
-                    .build();
+
+    public NumberReceiverResponseDto inputNumbers(Set<Integer> numbersFromUser) {
+        List<ValidationResult> validationResultList = numberValidator.validate(numbersFromUser);
+        if (!validationResultList.isEmpty()) {
+            String resultMessage = numberValidator.createResultMessage();
+            return new NumberReceiverResponseDto(null, resultMessage);
         }
-        return InputNumberResultDto.builder()
-                .message("failed")
+        LocalDateTime drawDate = drawDateGenerator.getNextDrawDate();
+
+        String hash = hashGenerator.getHash();
+
+        TicketDto generatedTicket = TicketDto.builder()
+                .hash(hash)
+                .numbers(numbersFromUser)
+                .drawDate(drawDate)
+                .build();
+
+        Ticket savedTicket = Ticket.builder()
+                .hash(hash)
+                .numbers(generatedTicket.numbers())
+                .drawDate(generatedTicket.drawDate())
+                .build();
+
+        ticketRepository.save(savedTicket);
+
+        return new NumberReceiverResponseDto(generatedTicket, INPUT_SUCCESS.info);
+    }
+
+    public List<TicketDto> retrieveAllTicketsByNextDrawDate() {
+        LocalDateTime nextDrawDate = drawDateGenerator.getNextDrawDate();
+        return retrieveAllTicketsByNextDrawDate(nextDrawDate);
+    }
+
+    public List<TicketDto> retrieveAllTicketsByNextDrawDate(LocalDateTime date) {
+        LocalDateTime nextDrawDate = drawDateGenerator.getNextDrawDate();
+        if (date.isAfter(nextDrawDate)) {
+            return Collections.emptyList();
+        }
+        return ticketRepository.findAllTicketsByDrawDate(date)
+                .stream()
+                .filter(ticket -> ticket.drawDate().isEqual(date))
+                .map(ticket -> TicketDto.builder()
+                        .hash(ticket.hash())
+                        .numbers(ticket.numbers())
+                        .drawDate(ticket.drawDate())
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    public LocalDateTime retrieveNextDrawDate() {
+        return drawDateGenerator.getNextDrawDate();
+    }
+
+
+    public TicketDto findByHash(String hash) {
+        Ticket ticket = ticketRepository.findByHash(hash);
+        return TicketDto.builder()
+                .hash(ticket.hash())
+                .numbers(ticket.numbers())
+                .drawDate(ticket.drawDate())
                 .build();
     }
-
-    public List<TicketDto> userNumbers(LocalDateTime date) {
-        List<Ticket> allTicketsByDrawDate = repository.findAllTicketsByDrawDate(date);
-        return allTicketsByDrawDate
-                .stream()
-                .map(TicketMapper::mapFromTicket)
-                .toList();
-    }
-
 
 }
